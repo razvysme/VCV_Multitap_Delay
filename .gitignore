@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+dist/
+dep/
+.cache/
+
+# Compiled plugin binaries
+plugin.dylib
+plugin.so
+plugin.dll
+plugin.exp
+plugin.lib
+plugin.pdb
+
+# Project-specific generated files
+compile_commands.json
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Intermediate files
+*.o
+*.d
