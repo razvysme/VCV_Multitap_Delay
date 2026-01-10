@@ -15,14 +15,12 @@ class Tap {
   std::unique_ptr<FX1Processor> fx1;
   std::unique_ptr<FX2Processor> fx2;
 
-  std::vector<Processor *> processors;
-
 public:
-  Tap(float *bL, float *bR, size_t size, size_t *wIdx);
+  Tap(size_t bufferSize);
 
   void setParam(int mode, float p1, float p2);
-  void setOffset(int mode, float o1, float o2);
-  void process(float &left, float &right, float sampleRate);
+  void process(float inL, float inR, float &outL, float &outR,
+               float sampleRate);
 };
 
 } // namespace paisa

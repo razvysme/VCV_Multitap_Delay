@@ -7,35 +7,45 @@
 namespace paisa {
 
 class AmpPanProcessor : public Processor {
-  float gainDb = 0.0f;
-  float pan = 0.0f;
-  float offsetGainDb = 0.0f;
-  float offsetPan = 0.0f;
+  float normalizedAmp = 0.5f;
+  float normalizedPan = 0.5f;
   Panner panner;
+
+  // Cached values
+  float gain = 1.0f;
+  float panValue = 0.0f;
+  bool dirty = true;
 
 public:
   void setParams(float p1, float p2) override {
-    gainDb = p1 * 78.f - 72.f;
-    pan = p2 * 2.f - 1.f;
-  }
-
-  void setOffsets(float o1, float o2) override {
-    offsetGainDb = o1 * 48.f;
-    offsetPan = o2;
+    if (p1 != normalizedAmp || p2 != normalizedPan) {
+      normalizedAmp = p1;
+      normalizedPan = p2;
+      dirty = true;
+    }
   }
 
   void process(float &left, float &right, float sampleRate) override {
-    float totalDb = std::max(-100.f, std::min(24.f, gainDb + offsetGainDb));
-    float totalPan = std::max(-1.f, std::min(1.f, pan + offsetPan));
+    if (dirty) {
+      // Clip the implementation
+      float k1 = std::max(0.0f, std::min(1.0f, normalizedAmp));
+      float k2 = std::max(0.0f, std::min(1.0f, normalizedPan));
 
-    float gain = std::pow(10.f, totalDb / 20.f);
+      // Logarithmic curve for amplitude (linear in dB)
+      // Consistent with how volume is perceived
+      float gainDb = k1 * 78.f - 72.f; // -72dB to +6dB
+      gain = std::pow(10.f, gainDb / 20.f);
 
-    // Apply gain first
+      // Linear for panning (the Panner internally handles constant power law)
+      panValue = k2 * 2.f - 1.f; // Map [0, 1] to [-1, 1]
+
+      dirty = false;
+    }
+
     left *= gain;
     right *= gain;
 
-    // Apply constant power panning
-    panner.process(left, right, totalPan);
+    panner.process(left, right, panValue);
   }
 };
 

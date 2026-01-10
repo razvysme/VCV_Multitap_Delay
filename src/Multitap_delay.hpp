@@ -1,14 +1,18 @@
 #pragma once
+#include "Reverb.hpp"
 #include "Tap.hpp"
 #include "plugin.hpp"
 
 struct Multitap_delay : Module {
   enum ParamId {
-    // 5 Global Mode buttons
     ENUMS(MODE_PARAMS, 5),
     // 5 Columns (4 Taps + 1 Meta), each with 2 knobs
     ENUMS(COL_KNOB1_PARAMS, 5),
     ENUMS(COL_KNOB2_PARAMS, 5),
+    INPUT_GAIN_PARAM,
+    REVERB_MIX_PARAM,
+    REVERB_GRAVITY_PARAM,
+    REVERB_DIFFUSION_PARAM,
     NUM_PARAMS
   };
   enum InputId { IN_L_INPUT, IN_R_INPUT, NUM_INPUTS };
@@ -42,20 +46,26 @@ struct Multitap_delay : Module {
   // Internal State Storage (for persistence and mode switching)
   // [Tap Index 0-4 (4 is Meta)][Mode Index][Knob 0-1]
   float knobState[5][5][2];
+  float inputGainState = 0.923076f; // Default to 0dB
+
+  float reverbMixState = 0.3f;
+  float reverbGravityState = 0.5f;
+  float reverbDiffusionState = 0.5f;
+
   int currentMode = 0;
 
   static constexpr size_t MAX_DELAY_SAMPLES = 192000 * 10;
-  float *bufferL = nullptr;
-  float *bufferR = nullptr;
-  size_t writeIndex = 0;
 
   std::vector<std::unique_ptr<paisa::Tap>> taps;
+  std::unique_ptr<paisa::Reverb> reverb;
 
   Multitap_delay();
   ~Multitap_delay();
 
-  void onSampleRateChange() override;
   void process(const ProcessArgs &args) override;
+  void onSampleRateChange() override;
+
+  void updateKnobsFromState();
 
   json_t *dataToJson() override;
   void dataFromJson(json_t *rootJ) override;
