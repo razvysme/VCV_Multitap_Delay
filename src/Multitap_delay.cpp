@@ -119,6 +119,7 @@ Multitap_delay::Multitap_delay() {
   configParam(REVERB_MIX_PARAM, 0.f, 1.f, 0.3f, "Reverb Mix");
   configParam(REVERB_GRAVITY_PARAM, 0.f, 1.f, 0.5f, "Reverb Gravity");
   configParam(REVERB_DIFFUSION_PARAM, 0.f, 1.f, 0.5f, "Reverb Diffusion");
+  configParam(REVERB_MODE_PARAM, 0.f, 1.f, 0.f, "Reverb Mode");
 
   configInput(IN_L_INPUT, "Left Input");
   configInput(IN_R_INPUT, "Right Input");
@@ -136,6 +137,7 @@ Multitap_delay::Multitap_delay() {
   }
 
   reverb = std::unique_ptr<paisa::Reverb>(new paisa::Reverb());
+  fdnReverb = std::unique_ptr<paisa::FDNReverb>(new paisa::FDNReverb());
 
   for (int col = 0; col < 5; col++) {
     for (int m = 0; m < 5; m++) {
@@ -150,6 +152,12 @@ Multitap_delay::Multitap_delay() {
       } else if (m == MODE_FILTER) {
         knobState[col][m][0] = 0.5f;
         knobState[col][m][1] = 1.0f;
+      } else if (m == MODE_FX1) {
+        knobState[col][m][0] = 0.2f; // Some default shift
+        knobState[col][m][1] =
+            0.5f; // Normal direction, 0% wet if bipolar 0..1?
+                  // Wait, k2 is [-1, 1] in internal logic, but knobState is
+                  // usually 0..1 in Rack. Let's check how k2 is handled.
       }
 
       if (col < 4) {
@@ -187,6 +195,11 @@ void Multitap_delay::updateKnobsFromState() {
                       math::clamp(reverbGravityState, 0.f, 1.f),
                       math::clamp(reverbDiffusionState, 0.f, 1.f));
   }
+  if (fdnReverb) {
+    fdnReverb->setParams(math::clamp(reverbMixState, 0.f, 1.f),
+                         math::clamp(reverbGravityState, 0.f, 1.f),
+                         math::clamp(reverbDiffusionState, 0.f, 1.f));
+  }
 }
 
 void Multitap_delay::onSampleRateChange() {}
@@ -215,6 +228,8 @@ void Multitap_delay::process(const ProcessArgs &args) {
     params[MODE_PARAMS + currentMode].setValue(1.f);
   }
 
+  reverbModeFDN = params[REVERB_MODE_PARAM].getValue() > 0.5f;
+
   float sumL = 0.f, sumR = 0.f;
   for (int i = 0; i < 4; i++) {
     float tapL, tapR;
@@ -227,8 +242,13 @@ void Multitap_delay::process(const ProcessArgs &args) {
 
   float outL = sumL * 0.25f;
   float outR = sumR * 0.25f;
-  if (reverb)
-    reverb->process(outL, outR, args.sampleRate);
+  if (reverbModeFDN) {
+    if (fdnReverb)
+      fdnReverb->process(outL, outR, args.sampleRate);
+  } else {
+    if (reverb)
+      reverb->process(outL, outR, args.sampleRate);
+  }
 
   outputs[SUM_L_OUTPUT].setVoltage(outL);
   outputs[SUM_R_OUTPUT].setVoltage(outR);
@@ -254,6 +274,7 @@ json_t *Multitap_delay::dataToJson() {
                       json_real(reverbGravityState));
   json_object_set_new(rootJ, "reverbDiffusionState",
                       json_real(reverbDiffusionState));
+  json_object_set_new(rootJ, "reverbModeFDN", json_boolean(reverbModeFDN));
   json_object_set_new(rootJ, "currentMode", json_integer(currentMode));
   return rootJ;
 }
@@ -282,6 +303,11 @@ void Multitap_delay::dataFromJson(json_t *rootJ) {
   json_t *rdJ = json_object_get(rootJ, "reverbDiffusionState");
   if (rdJ)
     reverbDiffusionState = json_real_value(rdJ);
+  json_t *rmodeJ = json_object_get(rootJ, "reverbModeFDN");
+  if (rmodeJ) {
+    reverbModeFDN = json_boolean_value(rmodeJ);
+    params[REVERB_MODE_PARAM].setValue(reverbModeFDN ? 1.f : 0.f);
+  }
   json_t *modeJ = json_object_get(rootJ, "currentMode");
   if (modeJ)
     currentMode = json_integer_value(modeJ);
@@ -377,6 +403,16 @@ struct Multitap_delayWidget : ModuleWidget {
         rk->reverbType = RelativeKnob::REVERB_DIFFUSION;
       addParam(rk);
     }
+    addParam(createParamCentered<CKSS>(mm2px(Vec(62.0, 92.0)), module,
+                                       Multitap_delay::REVERB_MODE_PARAM));
+    Label *modeLabel = new Label();
+    modeLabel->box.pos = mm2px(Vec(62.0 - 5.0, 92.0 - 10));
+    modeLabel->box.size = mm2px(Vec(10, 5));
+    modeLabel->fontSize = 8;
+    modeLabel->color = nvgRGB(0xff, 0xff, 0xff);
+    modeLabel->text = "FDN";
+    addChild(modeLabel);
+
     addInput(createInputCentered<ThemedPJ301MPort>(mm2px(Vec(7.62, 50)), module,
                                                    Multitap_delay::IN_L_INPUT));
     addInput(createInputCentered<ThemedPJ301MPort>(mm2px(Vec(7.62, 65)), module,
@@ -449,6 +485,22 @@ struct Multitap_delayWidget : ModuleWidget {
           ss << (f / 1000.f) << "kHz";
       } else
         ss << (val * 10.f) << "oct";
+      break;
+    case Multitap_delay::MODE_FX1:
+      if (k == 0) {
+        float f = 5000.0f * std::pow(val, 2.5f);
+        if (f < 1000.f)
+          ss << (int)f << "Hz";
+        else
+          ss << std::fixed << std::setprecision(2) << (f / 1000.f) << "kHz";
+      } else {
+        float bipolar = val * 2.0f - 1.0f;
+        if (std::abs(bipolar) < 0.04f)
+          ss << "Dry";
+        else
+          ss << (bipolar > 0 ? "+" : "-") << (int)(std::abs(bipolar) * 100.f)
+             << "%";
+      }
       break;
     default:
       ss << std::setprecision(2) << val;

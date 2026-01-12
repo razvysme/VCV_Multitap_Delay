@@ -1,4 +1,5 @@
 #pragma once
+#include "FDNReverb.hpp"
 #include "Reverb.hpp"
 #include "Tap.hpp"
 #include "plugin.hpp"
@@ -13,6 +14,7 @@ struct Multitap_delay : Module {
     REVERB_MIX_PARAM,
     REVERB_GRAVITY_PARAM,
     REVERB_DIFFUSION_PARAM,
+    REVERB_MODE_PARAM, // 0 for Default, 1 for FDN
     NUM_PARAMS
   };
   enum InputId { IN_L_INPUT, IN_R_INPUT, NUM_INPUTS };
@@ -58,6 +60,9 @@ struct Multitap_delay : Module {
 
   std::vector<std::unique_ptr<paisa::Tap>> taps;
   std::unique_ptr<paisa::Reverb> reverb;
+  std::unique_ptr<paisa::FDNReverb> fdnReverb;
+
+  bool reverbModeFDN = false;
 
   Multitap_delay();
   ~Multitap_delay();
