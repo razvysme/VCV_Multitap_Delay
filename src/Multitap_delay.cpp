@@ -103,6 +103,52 @@ struct RelativeKnob : RoundBlackKnob {
   }
 };
 
+struct AdvancedSlider : VCVSlider {
+  enum ParamType { DAMPING, MOD_FREQ, MOD_DEPTH, TIME_SCALE, PH_NOISE };
+  ParamType type;
+
+  void onDragMove(const event::DragMove &e) override {
+    VCVSlider::onDragMove(e);
+    auto *module = dynamic_cast<Multitap_delay *>(this->module);
+    if (!module)
+      return;
+
+    float val = getParamQuantity() ? getParamQuantity()->getValue() : 0.f;
+    if (type == DAMPING)
+      module->reverbDampingState = val;
+    else if (type == MOD_FREQ)
+      module->reverbModFreqState = val;
+    else if (type == MOD_DEPTH)
+      module->reverbModDepthState = val;
+    else if (type == TIME_SCALE)
+      module->reverbTimeState = val;
+    else if (type == PH_NOISE)
+      module->phaserNoiseGainState = val;
+
+    module->updateKnobsFromState();
+  }
+
+  void draw(const DrawArgs &args) override {
+    float val = getParamQuantity() ? getParamQuantity()->getValue() : 0.f;
+
+    // Draw track
+    nvgBeginPath(args.vg);
+    nvgRoundedRect(args.vg, -2, -20, 4, 40, 2);
+    nvgFillColor(args.vg, nvgRGB(0x10, 0x10, 0x10));
+    nvgFill(args.vg);
+
+    // Draw handle
+    float y = 20 - (val * 40);
+    nvgBeginPath(args.vg);
+    nvgRoundedRect(args.vg, -5, y - 2, 10, 4, 1);
+    if (type == PH_NOISE)
+      nvgFillColor(args.vg, nvgRGB(0xff, 0xaa, 0xaa));
+    else
+      nvgFillColor(args.vg, nvgRGB(0xff, 0xff, 0xff));
+    nvgFill(args.vg);
+  }
+};
+
 Multitap_delay::Multitap_delay() {
   config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
 
@@ -119,7 +165,14 @@ Multitap_delay::Multitap_delay() {
   configParam(REVERB_MIX_PARAM, 0.f, 1.f, 0.3f, "Reverb Mix");
   configParam(REVERB_GRAVITY_PARAM, 0.f, 1.f, 0.5f, "Reverb Gravity");
   configParam(REVERB_DIFFUSION_PARAM, 0.f, 1.f, 0.5f, "Reverb Diffusion");
-  configParam(REVERB_MODE_PARAM, 0.f, 1.f, 0.f, "Reverb Mode");
+  configParam(REVERB_MODE_PARAM, 0.f, 2.f, 0.f,
+              "Reverb Mode"); // 0: Default, 1: FDN, 2: Hole
+
+  configParam(REVERB_DAMPING_PARAM, 0.f, 1.f, 0.2f, "Reverb 1 Damping");
+  configParam(REVERB_MOD_FREQ_PARAM, 0.f, 1.f, 0.5f, "Reverb 1 Mod Frequency");
+  configParam(REVERB_MOD_DEPTH_PARAM, 0.f, 1.f, 0.5f, "Reverb 1 Mod Depth");
+  configParam(REVERB_TIME_PARAM, 0.f, 1.f, 0.5f, "Reverb 1 Time Scale");
+  configParam(PHASER_NOISE_GAIN_PARAM, 0.f, 1.f, 0.0f, "Phaser Noise Gain");
 
   configInput(IN_L_INPUT, "Left Input");
   configInput(IN_R_INPUT, "Right Input");
@@ -138,6 +191,7 @@ Multitap_delay::Multitap_delay() {
 
   reverb = std::unique_ptr<paisa::Reverb>(new paisa::Reverb());
   fdnReverb = std::unique_ptr<paisa::FDNReverb>(new paisa::FDNReverb());
+  holeReverb = std::unique_ptr<paisa::HoleReverb>(new paisa::HoleReverb());
 
   for (int col = 0; col < 5; col++) {
     for (int m = 0; m < 5; m++) {
@@ -153,11 +207,11 @@ Multitap_delay::Multitap_delay() {
         knobState[col][m][0] = 0.5f;
         knobState[col][m][1] = 1.0f;
       } else if (m == MODE_FX1) {
-        knobState[col][m][0] = 0.2f; // Some default shift
-        knobState[col][m][1] =
-            0.5f; // Normal direction, 0% wet if bipolar 0..1?
-                  // Wait, k2 is [-1, 1] in internal logic, but knobState is
-                  // usually 0..1 in Rack. Let's check how k2 is handled.
+        knobState[col][m][0] = 0.2f;
+        knobState[col][m][1] = 0.5f;
+      } else if (m == MODE_FX2) {
+        knobState[col][m][0] = 0.5f; // ~1.4 Hz
+        knobState[col][m][1] = 0.5f; // 50% depth
       }
 
       if (col < 4) {
@@ -179,7 +233,14 @@ void Multitap_delay::updateKnobsFromState() {
 
     if (i < 4) {
       for (int m = 0; m < NUM_MODES; m++) {
-        taps[i]->setParam(m, knobState[i][m][0], knobState[i][m][1]);
+        float p1 = knobState[i][m][0];
+        float p2 = knobState[i][m][1];
+        if (m == MODE_FX2) {
+          // Special case for FX2 to include noise gain from state
+          taps[i]->setFX2Params(p1, p2, phaserNoiseGainState);
+        } else {
+          taps[i]->setParam(m, p1, p2);
+        }
       }
     }
   }
@@ -191,15 +252,36 @@ void Multitap_delay::updateKnobsFromState() {
       math::clamp(reverbDiffusionState, 0.f, 1.f));
 
   if (reverb) {
+    float modF =
+        std::exp(std::log(0.1f) +
+                 reverbModFreqState * (std::log(10.0f) - std::log(0.1f)));
+    float modD = reverbModDepthState * 2.0f;
+    float tScale = 0.25f + reverbTimeState * 2.0f;
     reverb->setParams(math::clamp(reverbMixState, 0.f, 1.f),
                       math::clamp(reverbGravityState, 0.f, 1.f),
-                      math::clamp(reverbDiffusionState, 0.f, 1.f));
+                      math::clamp(reverbDiffusionState, 0.f, 1.f),
+                      math::clamp(reverbDampingState, 0.f, 1.f), modF, modD,
+                      tScale);
   }
   if (fdnReverb) {
     fdnReverb->setParams(math::clamp(reverbMixState, 0.f, 1.f),
                          math::clamp(reverbGravityState, 0.f, 1.f),
                          math::clamp(reverbDiffusionState, 0.f, 1.f));
   }
+  if (holeReverb) {
+    holeReverb->setParams(math::clamp(reverbMixState, 0.f, 1.f),
+                          math::clamp(reverbGravityState, 0.f, 1.f),
+                          math::clamp(reverbDiffusionState, 0.f, 1.f));
+  }
+  params[REVERB_DAMPING_PARAM].setValue(
+      math::clamp(reverbDampingState, 0.f, 1.f));
+  params[REVERB_MOD_FREQ_PARAM].setValue(
+      math::clamp(reverbModFreqState, 0.f, 1.f));
+  params[REVERB_MOD_DEPTH_PARAM].setValue(
+      math::clamp(reverbModDepthState, 0.f, 1.f));
+  params[REVERB_TIME_PARAM].setValue(math::clamp(reverbTimeState, 0.f, 1.f));
+  params[PHASER_NOISE_GAIN_PARAM].setValue(
+      math::clamp(phaserNoiseGainState, 0.f, 1.f));
 }
 
 void Multitap_delay::onSampleRateChange() {}
@@ -228,7 +310,7 @@ void Multitap_delay::process(const ProcessArgs &args) {
     params[MODE_PARAMS + currentMode].setValue(1.f);
   }
 
-  reverbModeFDN = params[REVERB_MODE_PARAM].getValue() > 0.5f;
+  reverbMode = (int)std::round(params[REVERB_MODE_PARAM].getValue());
 
   float sumL = 0.f, sumR = 0.f;
   for (int i = 0; i < 4; i++) {
@@ -242,9 +324,12 @@ void Multitap_delay::process(const ProcessArgs &args) {
 
   float outL = sumL * 0.25f;
   float outR = sumR * 0.25f;
-  if (reverbModeFDN) {
+  if (reverbMode == 1) {
     if (fdnReverb)
       fdnReverb->process(outL, outR, args.sampleRate);
+  } else if (reverbMode == 2) {
+    if (holeReverb)
+      holeReverb->process(outL, outR, args.sampleRate);
   } else {
     if (reverb)
       reverb->process(outL, outR, args.sampleRate);
@@ -274,7 +359,16 @@ json_t *Multitap_delay::dataToJson() {
                       json_real(reverbGravityState));
   json_object_set_new(rootJ, "reverbDiffusionState",
                       json_real(reverbDiffusionState));
-  json_object_set_new(rootJ, "reverbModeFDN", json_boolean(reverbModeFDN));
+  json_object_set_new(rootJ, "reverbMode", json_integer(reverbMode));
+  json_object_set_new(rootJ, "reverbDampingState",
+                      json_real(reverbDampingState));
+  json_object_set_new(rootJ, "reverbModFreqState",
+                      json_real(reverbModFreqState));
+  json_object_set_new(rootJ, "reverbModDepthState",
+                      json_real(reverbModDepthState));
+  json_object_set_new(rootJ, "reverbTimeState", json_real(reverbTimeState));
+  json_object_set_new(rootJ, "phaserNoiseGainState",
+                      json_real(phaserNoiseGainState));
   json_object_set_new(rootJ, "currentMode", json_integer(currentMode));
   return rootJ;
 }
@@ -303,10 +397,33 @@ void Multitap_delay::dataFromJson(json_t *rootJ) {
   json_t *rdJ = json_object_get(rootJ, "reverbDiffusionState");
   if (rdJ)
     reverbDiffusionState = json_real_value(rdJ);
-  json_t *rmodeJ = json_object_get(rootJ, "reverbModeFDN");
+
+  json_t *dmpJ = json_object_get(rootJ, "reverbDampingState");
+  if (dmpJ)
+    reverbDampingState = json_real_value(dmpJ);
+  json_t *mfJ = json_object_get(rootJ, "reverbModFreqState");
+  if (mfJ)
+    reverbModFreqState = json_real_value(mfJ);
+  json_t *mdJ = json_object_get(rootJ, "reverbModDepthState");
+  if (mdJ)
+    reverbModDepthState = json_real_value(mdJ);
+  json_t *rtJ = json_object_get(rootJ, "reverbTimeState");
+  if (rtJ)
+    reverbTimeState = json_real_value(rtJ);
+  json_t *pngJ = json_object_get(rootJ, "phaserNoiseGainState");
+  if (pngJ)
+    phaserNoiseGainState = json_real_value(pngJ);
+  json_t *rmodeJ = json_object_get(rootJ, "reverbMode");
   if (rmodeJ) {
-    reverbModeFDN = json_boolean_value(rmodeJ);
-    params[REVERB_MODE_PARAM].setValue(reverbModeFDN ? 1.f : 0.f);
+    reverbMode = json_integer_value(rmodeJ);
+    params[REVERB_MODE_PARAM].setValue((float)reverbMode);
+  } else {
+    // Fallback for old save files
+    json_t *oldRModeJ = json_object_get(rootJ, "reverbModeFDN");
+    if (oldRModeJ) {
+      reverbMode = json_boolean_value(oldRModeJ) ? 1 : 0;
+      params[REVERB_MODE_PARAM].setValue((float)reverbMode);
+    }
   }
   json_t *modeJ = json_object_get(rootJ, "currentMode");
   if (modeJ)
@@ -322,6 +439,38 @@ struct Multitap_delayWidget : ModuleWidget {
   Multitap_delayWidget(Multitap_delay *module) {
     setModule(module);
     setPanel(createPanel(asset::plugin(pluginInstance, "res/Multitap.svg")));
+
+    // EXPANDED TO THE RIGHT: Advanced Section
+    box.size.x = mm2px(180.0); // 36 HP
+
+    // Draw a dark background for the expanded area
+    auto *bg = new TransparentWidget();
+    bg->box.pos =
+        mm2px(Vec(91.44, 0)); // Start where the original panel (18HP) ends
+    bg->box.size = mm2px(Vec(180.0 - 91.44, 128.5));
+    addChild(bg);
+
+    // Custom drawing for the background
+    struct AdvBackground : Widget {
+      void draw(const DrawArgs &args) override {
+        nvgBeginPath(args.vg);
+        nvgRect(args.vg, 0, 0, box.size.x, box.size.y);
+        nvgFillColor(args.vg, nvgRGB(0x28, 0x28, 0x28));
+        nvgFill(args.vg);
+
+        // Separator line
+        nvgBeginPath(args.vg);
+        nvgMoveTo(args.vg, 0, 0);
+        nvgLineTo(args.vg, 0, box.size.y);
+        nvgStrokeColor(args.vg, nvgRGB(0x50, 0x50, 0x50));
+        nvgStrokeWidth(args.vg, 2.0);
+        nvgStroke(args.vg);
+      }
+    };
+    auto *advBg = new AdvBackground();
+    advBg->box = bg->box;
+    addChild(advBg);
+
     addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, 0)));
     addChild(
         createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, 0)));
@@ -329,6 +478,7 @@ struct Multitap_delayWidget : ModuleWidget {
         Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
     addChild(createWidget<ThemedScrew>(Vec(
         box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
+
     float centerModeX = 45.0;
     for (int m = 0; m < 5; m++) {
       float btnX = centerModeX - 16.0 + m * 8.0;
@@ -403,14 +553,16 @@ struct Multitap_delayWidget : ModuleWidget {
         rk->reverbType = RelativeKnob::REVERB_DIFFUSION;
       addParam(rk);
     }
-    addParam(createParamCentered<CKSS>(mm2px(Vec(62.0, 92.0)), module,
-                                       Multitap_delay::REVERB_MODE_PARAM));
+    auto *modeKnob = createParamCentered<RoundSmallBlackKnob>(
+        mm2px(Vec(62.0, 92.0)), module, Multitap_delay::REVERB_MODE_PARAM);
+    modeKnob->snap = true;
+    addParam(modeKnob);
     Label *modeLabel = new Label();
     modeLabel->box.pos = mm2px(Vec(62.0 - 5.0, 92.0 - 10));
     modeLabel->box.size = mm2px(Vec(10, 5));
     modeLabel->fontSize = 8;
     modeLabel->color = nvgRGB(0xff, 0xff, 0xff);
-    modeLabel->text = "FDN";
+    modeLabel->text = "ALG";
     addChild(modeLabel);
 
     addInput(createInputCentered<ThemedPJ301MPort>(mm2px(Vec(7.62, 50)), module,
@@ -421,6 +573,48 @@ struct Multitap_delayWidget : ModuleWidget {
         mm2px(Vec(95.0, 95)), module, Multitap_delay::SUM_L_OUTPUT));
     addOutput(createOutputCentered<ThemedPJ301MPort>(
         mm2px(Vec(95.0, 110)), module, Multitap_delay::SUM_R_OUTPUT));
+
+    // EXPANDED TO THE RIGHT: Advanced Reverb Controls
+    // box.size.x is already set to 180mm at the top of constructor
+    float startX = 105.0;
+    const char *labels[] = {"DAMP", "FREQ", "DEPTH", "TIME"};
+    for (int i = 0; i < 4; i++) {
+      float x = startX + i * 10.0;
+      Label *l = new Label();
+      l->box.pos = mm2px(Vec(x - 5.0, 30));
+      l->box.size = mm2px(Vec(10, 5));
+      l->fontSize = 8;
+      l->color = nvgRGB(0xff, 0xff, 0xff);
+      l->text = labels[i];
+      addChild(l);
+
+      auto *s = createParamCentered<AdvancedSlider>(
+          mm2px(Vec(x, 70)), module, Multitap_delay::REVERB_DAMPING_PARAM + i);
+      s->type = (AdvancedSlider::ParamType)i;
+      addParam(s);
+    }
+
+    // EXTRA SLIDER FOR NOISE GAIN (Advanced control)
+    float noiseX = startX + 4 * 10.0 + 12.0;
+    Label *ln = new Label();
+    ln->box.pos = mm2px(Vec(noiseX - 5.0, 30));
+    ln->box.size = mm2px(Vec(10, 5));
+    ln->fontSize = 8;
+    ln->color = nvgRGB(0xff, 0xaa, 0xaa);
+    ln->text = "NOISE";
+    addChild(ln);
+
+    auto *sn = createParamCentered<AdvancedSlider>(
+        mm2px(Vec(noiseX, 70)), module,
+        Multitap_delay::PHASER_NOISE_GAIN_PARAM);
+    sn->type = AdvancedSlider::PH_NOISE;
+    addParam(sn);
+
+    Label *advLabel = new Label();
+    advLabel->box.pos = mm2px(Vec(startX - 2.0, 15));
+    advLabel->fontSize = 10;
+    advLabel->text = "ADVANCED REVERB";
+    addChild(advLabel);
   }
 
   void step() override {
@@ -443,12 +637,23 @@ struct Multitap_delayWidget : ModuleWidget {
     ssM << (int)(math::clamp(module->reverbMixState, 0.f, 1.f) * 100.f) << "%";
     reverbLabels[0]->text = ssM.str();
     std::stringstream ssG;
-    ssG << "G:" << std::fixed << std::setprecision(2)
-        << math::clamp(module->reverbGravityState, 0.f, 1.f);
+    if (module->reverbMode == 2) { // Hole
+      ssG << "S:" << std::fixed << std::setprecision(2)
+          << (0.5f + math::clamp(module->reverbGravityState, 0.f, 1.f) * 2.5f);
+    } else {
+      ssG << "G:" << std::fixed << std::setprecision(2)
+          << math::clamp(module->reverbGravityState, 0.f, 1.f);
+    }
     reverbLabels[1]->text = ssG.str();
     std::stringstream ssD;
-    ssD << "D:" << std::fixed << std::setprecision(2)
-        << math::clamp(module->reverbDiffusionState, 0.f, 1.f);
+    if (module->reverbMode == 2) { // Hole
+      ssD << "D:" << std::fixed << std::setprecision(2)
+          << (0.1f +
+              math::clamp(module->reverbDiffusionState, 0.f, 1.f) * 0.9f);
+    } else {
+      ssD << "D:" << std::fixed << std::setprecision(2)
+          << math::clamp(module->reverbDiffusionState, 0.f, 1.f);
+    }
     reverbLabels[2]->text = ssD.str();
     ModuleWidget::step();
   }
@@ -488,7 +693,7 @@ struct Multitap_delayWidget : ModuleWidget {
       break;
     case Multitap_delay::MODE_FX1:
       if (k == 0) {
-        float f = 5000.0f * std::pow(val, 2.5f);
+        float f = 50.0f + 4950.0f * std::pow(val, 2.0f);
         if (f < 1000.f)
           ss << (int)f << "Hz";
         else
@@ -500,6 +705,15 @@ struct Multitap_delayWidget : ModuleWidget {
         else
           ss << (bipolar > 0 ? "+" : "-") << (int)(std::abs(bipolar) * 100.f)
              << "%";
+      }
+      break;
+    case Multitap_delay::MODE_FX2:
+      if (k == 0) {
+        float f =
+            std::exp(std::log(0.1f) + val * (std::log(20.0f) - std::log(0.1f)));
+        ss << f << "Hz";
+      } else {
+        ss << (int)(val * 100.f) << "%";
       }
       break;
     default:

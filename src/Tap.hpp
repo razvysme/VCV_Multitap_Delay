@@ -19,6 +19,7 @@ public:
   Tap(size_t bufferSize);
 
   void setParam(int mode, float p1, float p2);
+  void setFX2Params(float p1, float p2, float p3);
   void process(float inL, float inR, float &outL, float &outR,
                float sampleRate);
 };

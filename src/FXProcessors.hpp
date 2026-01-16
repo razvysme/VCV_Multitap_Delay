@@ -1,5 +1,6 @@
 #pragma once
 #include "FrequencyShifter.hpp"
+#include "Phaser.hpp"
 #include "Processor.hpp"
 
 namespace paisa {
@@ -10,16 +11,25 @@ private:
 
 public:
   void setParams(float p1, float p2) override { shifter.setParams(p1, p2); }
+  void setParams(float p1, float p2, float p3) override {
+    shifter.setParams(p1, p2);
+  }
   void process(float &left, float &right, float sampleRate) override {
     shifter.process(left, right, sampleRate);
   }
 };
 
 class FX2Processor : public Processor {
+private:
+  Phaser phaser;
+
 public:
-  void setParams(float p1, float p2) override {}
+  void setParams(float p1, float p2) override { phaser.setParams(p1, p2); }
+  void setParams(float p1, float p2, float p3) override {
+    phaser.setParams(p1, p2, p3);
+  }
   void process(float &left, float &right, float sampleRate) override {
-    // Pass through
+    phaser.process(left, right, sampleRate);
   }
 };
 

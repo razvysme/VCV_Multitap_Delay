@@ -1,5 +1,6 @@
 #pragma once
 #include "FDNReverb.hpp"
+#include "HoleReverbWrapper.hpp"
 #include "Reverb.hpp"
 #include "Tap.hpp"
 #include "plugin.hpp"
@@ -14,7 +15,12 @@ struct Multitap_delay : Module {
     REVERB_MIX_PARAM,
     REVERB_GRAVITY_PARAM,
     REVERB_DIFFUSION_PARAM,
-    REVERB_MODE_PARAM, // 0 for Default, 1 for FDN
+    REVERB_MODE_PARAM, // 0 for Default, 1 for FDN, 2 for Hole
+    REVERB_DAMPING_PARAM,
+    REVERB_MOD_FREQ_PARAM,
+    REVERB_MOD_DEPTH_PARAM,
+    REVERB_TIME_PARAM,
+    PHASER_NOISE_GAIN_PARAM,
     NUM_PARAMS
   };
   enum InputId { IN_L_INPUT, IN_R_INPUT, NUM_INPUTS };
@@ -53,6 +59,11 @@ struct Multitap_delay : Module {
   float reverbMixState = 0.3f;
   float reverbGravityState = 0.5f;
   float reverbDiffusionState = 0.5f;
+  float reverbDampingState = 0.2f;
+  float reverbModFreqState = 0.5f;
+  float reverbModDepthState = 0.5f;
+  float reverbTimeState = 0.5f;
+  float phaserNoiseGainState = 0.0f;
 
   int currentMode = 0;
 
@@ -61,8 +72,9 @@ struct Multitap_delay : Module {
   std::vector<std::unique_ptr<paisa::Tap>> taps;
   std::unique_ptr<paisa::Reverb> reverb;
   std::unique_ptr<paisa::FDNReverb> fdnReverb;
+  std::unique_ptr<paisa::HoleReverb> holeReverb;
 
-  bool reverbModeFDN = false;
+  int reverbMode = 0; // 0 for Default, 1 for FDN, 2 for Hole
 
   Multitap_delay();
   ~Multitap_delay();

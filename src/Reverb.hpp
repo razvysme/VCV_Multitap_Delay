@@ -19,15 +19,23 @@ private:
   float lfoOffsets[32];
   float baseDelays[32];
 
-  // Target parameters
-  float targetG = 0.5f;
-  float targetDiffusion = 0.5f;
-  float targetMix = 0.3f;
-
   // Smoothed parameters
   float currentG = 0.5f;
   float currentDiffusion = 0.5f;
   float currentMix = 0.3f;
+  float currentDamping = 0.0f;
+  float currentModFreq = 0.5f;
+  float currentModDepth = 1.0f;
+  float currentDelayTime = 1.0f;
+
+  // Target parameters
+  float targetG = 0.5f;
+  float targetDiffusion = 0.5f;
+  float targetMix = 0.3f;
+  float targetDamping = 0.0f;
+  float targetModFreq = 0.5f;
+  float targetModDepth = 1.0f;
+  float targetDelayTime = 1.0f;
 
   // Smoothing coefficient
   const float slewing = 0.001f;
@@ -58,9 +66,14 @@ public:
     }
   }
 
-  void setParams(float mixVal, float gravity, float diff) {
+  void setParams(float mixVal, float gravity, float diff, float damp,
+                 float modF, float modD, float dTime) {
     targetMix = mixVal;
     targetDiffusion = diff;
+    targetDamping = damp;
+    targetModFreq = modF;
+    targetModDepth = modD;
+    targetDelayTime = dTime;
 
     // Improved Gravity Mapping: more aggressive decay growth
     if (gravity < 0.4f) {
@@ -85,29 +98,39 @@ public:
     currentG += (targetG - currentG) * slewing;
     currentDiffusion += (targetDiffusion - currentDiffusion) * slewing;
     currentMix += (targetMix - currentMix) * slewing;
+    currentDamping += (targetDamping - currentDamping) * slewing;
+    currentModFreq += (targetModFreq - currentModFreq) * slewing;
+    currentModDepth += (targetModDepth - currentModDepth) * slewing;
+    currentDelayTime += (targetDelayTime - currentDelayTime) * slewing;
 
-    // Apply smoothed feedback to all stages
-    for (auto &stage : monoStages)
+    // Apply smoothed feedback and damping to all stages
+    for (auto &stage : monoStages) {
       stage->setFeedback(currentG);
-    for (auto &stage : leftStages)
+      stage->setDamping(currentDamping);
+    }
+    for (auto &stage : leftStages) {
       stage->setFeedback(currentG);
-    for (auto &stage : rightStages)
+      stage->setDamping(currentDamping);
+    }
+    for (auto &stage : rightStages) {
       stage->setFeedback(currentG);
+      stage->setDamping(currentDamping);
+    }
 
     float mono = (left + right) * 0.5f;
 
     // LFO Update
-    lfoPhase += 0.5f / sampleRate;
+    lfoPhase += currentModFreq / sampleRate;
     if (lfoPhase > 1.0f)
       lfoPhase -= 1.0f;
 
     // Smoothed diffusion scales delay times
-    float diffScale = 0.1f + currentDiffusion * 4.0f;
+    float diffScale = (0.1f + currentDiffusion * 4.0f) * currentDelayTime;
 
     // Processing Mono Diffusion
     for (int i = 0; i < 8; i++) {
       float lfo = std::sin((lfoPhase + lfoOffsets[i]) * 2.0f * M_PI);
-      float dTime = baseDelays[i] * diffScale + lfo * 10.0f;
+      float dTime = baseDelays[i] * diffScale + lfo * (10.0f * currentModDepth);
       mono = monoStages[i]->process(mono, dTime);
     }
 
@@ -117,11 +140,13 @@ public:
     // Stereo Branches
     for (int i = 0; i < 12; i++) {
       float lfoL = std::sin((lfoPhase + lfoOffsets[8 + i]) * 2.0f * M_PI);
-      float dTimeL = baseDelays[8 + i] * diffScale + lfoL * 15.0f;
+      float dTimeL =
+          baseDelays[8 + i] * diffScale + lfoL * (15.0f * currentModDepth);
       branchL = leftStages[i]->process(branchL, dTimeL);
 
       float lfoR = std::sin((lfoPhase + lfoOffsets[20 + i]) * 2.0f * M_PI);
-      float dTimeR = baseDelays[20 + i] * (diffScale * 1.08f) + lfoR * 15.0f;
+      float dTimeR = baseDelays[20 + i] * (diffScale * 1.08f) +
+                     lfoR * (15.0f * currentModDepth);
       branchR = rightStages[i]->process(branchR, dTimeR);
     }
 

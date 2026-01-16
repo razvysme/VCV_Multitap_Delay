@@ -31,6 +31,10 @@ void Tap::setParam(int mode, float p1, float p2) {
   }
 }
 
+void Tap::setFX2Params(float p1, float p2, float p3) {
+  fx2->setParams(p1, p2, p3);
+}
+
 void Tap::process(float inL, float inR, float &outL, float &outR,
                   float sampleRate) {
   // 1. Read from independent delay line

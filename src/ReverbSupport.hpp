@@ -9,11 +9,14 @@ private:
   std::vector<float> buffer;
   int writeIndex = 0;
   float g = 0.5f;
+  float lp = 0.0f; // Low-pass state for damping
+  float damping = 0.0f;
 
 public:
   Allpass(int size) { buffer.resize(size, 0.0f); }
 
   void setFeedback(float feedback) { g = feedback; }
+  void setDamping(float d) { damping = d; }
 
   float process(float x, float delaySamples) {
     float size = (float)buffer.size();
@@ -36,7 +39,11 @@ public:
     // Allpass canonical form: y[n] = g*x[n] + x[n-m] - g*y[n-m]
     // Which is y = g*x + delayed; buffer[w] = x - g*y;
     float y = g * x + delayed;
-    buffer[writeIndex] = x - g * y;
+
+    // Apply damping (low-pass) to the internal feedback signal
+    float feedbackSignal = x - g * y;
+    lp = feedbackSignal * (1.0f - damping) + lp * damping;
+    buffer[writeIndex] = lp;
 
     writeIndex = (writeIndex + 1) % buffer.size();
     return y;

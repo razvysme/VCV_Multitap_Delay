@@ -8,6 +8,7 @@ public:
   virtual ~Processor() = default;
   virtual void process(float &left, float &right, float sampleRate) = 0;
   virtual void setParams(float p1, float p2) = 0;
+  virtual void setParams(float p1, float p2, float p3) {}
 };
 
 } // namespace paisa
